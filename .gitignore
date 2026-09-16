@@ -1,0 +1,45 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+backend.env
+frontend.env
+*.pem
+*.key
+
+# Logs
+logs/
+*.log
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+build/
+.out/
+.next/
+coverage/
+
+# Local container data
+docker-data/
+
+# Compose local overrides
+docker-compose.override.yml
+
+# RDS bootstrap credentials
+database/rds/bootstrap.env

@@ -1,0 +1,19 @@
+{
+  "Comment": "Book ingestion from Postgres-SQL to Raw zone in S3",
+  "QueryLanguage": "JSONata",
+  "StartAt": "IngestBooks",
+  "States": {
+    "IngestBooks": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "glue_etl_bookstore",
+        "Arguments": {
+          "--target_entity": "books",
+          "--run_id": "{% $states.context.Execution.Name %}"
+        }
+      },
+      "End": true
+    }
+  }
+}
