@@ -49,7 +49,6 @@ ENTITY_CONFIGS: Dict[str, EntityConfig] = {
             ColumnSpec("first_name", "string"),
             ColumnSpec("last_name", "string"),
             ColumnSpec("email", "string"),
-            ColumnSpec("phone", "string"),
             ColumnSpec("city", "string"),
             ColumnSpec("country", "string"),
             ColumnSpec("created_at", "timestamp"),

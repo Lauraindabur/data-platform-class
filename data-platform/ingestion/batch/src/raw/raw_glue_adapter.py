@@ -1,3 +1,6 @@
+# se encarga de decirle al core como obtener los datos desde PostgreSQL usando Glue, 
+# cómo obtener los parámetros del Job, cómo crear Spark/GlueContext y cómo guardar el watermark.
+
 import json
 import sys
 from datetime import datetime, timezone
@@ -40,7 +43,7 @@ def log_event(event: str, **fields: Any) -> None:
     }
     print(json.dumps(payload, sort_keys=True, default=str))
 
-
+# funcion que realmente usa glue, hace conexion con postgres/ rds y lo lelva a dataframe de spark
 def read_postgres_query(
     glue_context: GlueContext,
     *,
@@ -49,7 +52,7 @@ def read_postgres_query(
     sample_query: str,
     transformation_context: str,
 ) -> Any:
-    source_dyf = glue_context.create_dynamic_frame.from_options(
+    source_dyf = glue_context.create_dynamic_frame.from_options( #<- conexion con postgress 
         connection_type="postgresql",
         connection_options={
             "useConnectionProperties": "true",
@@ -59,7 +62,7 @@ def read_postgres_query(
         },
         transformation_ctx=transformation_context,
     )
-    return source_dyf.toDF()
+    return source_dyf.toDF()  #<- pasa de un dynamic fram de glue a uno de spark 
 
 
 def read_database_upper_bound(
@@ -73,7 +76,7 @@ def read_database_upper_bound(
         glue_context,
         connection_name=connection_name,
         dbtable=dbtable,
-        sample_query="SELECT CURRENT_TIMESTAMP AS current_run_upper_bound",
+        sample_query="SELECT CURRENT_TIMESTAMP AS current_run_upper_bound",  
         transformation_context=f"{target_entity}_upper_bound",
     )
     rows = upper_bound_df.limit(2).collect()
@@ -84,27 +87,31 @@ def read_database_upper_bound(
         assume_naive_utc=True,
     )
 
-
+# 1 FASE: Preparar el entorno de Glue 
+# Se prepara el entorno de sparkcontext donde se va a ejecutar todo el proceso
 def run_job(args: Dict[str, str]) -> None:
-    spark_context = SparkContext.getOrCreate()
-    glue_context = GlueContext(spark_context)
+    spark_context = SparkContext.getOrCreate()   # <- apache  spark necestia un entorno de context 
+    glue_context = GlueContext(spark_context)  #<- permite ls usar las funciones de glu sobre spark
     spark = glue_context.spark_session
     spark.conf.set("spark.sql.session.timeZone", "UTC")
 
-    job = Job(glue_context)
+    job = Job(glue_context)  # <- inicializar el job de GLUE
     job.init(args["JOB_NAME"], args)
 
-    entity_config = get_entity_config(args["target_entity"])
-    dbtable = qualified_table_name(args["source_schema"], entity_config.source_table)
+# 2 FASE obtener configuracion y determinar que datos leer 
+    entity_config = get_entity_config(args["target_entity"])   #<- busca la entidd -books- que esta procesando 
+    dbtable = qualified_table_name(args["source_schema"], entity_config.source_table) #<- se construye la tabla llamada public.orders
+# 3 FASE Leer el watermark de cada entidad     
     watermark_store = SsmWatermarkStore(
         boto3.client("ssm"),
         args["ssm_watermark_prefix"],
     )
-    watermark_state = watermark_store.read(
+    watermark_state = watermark_store.read(  # <- responde a Hasta qué momento ya procesé orders???
         entity_config.name,
         args["initial_watermark"],
     )
-    upper_bound = read_database_upper_bound(
+# 4 FASE Leer la hora de PostgreSQL para determinar hasta que momento voy a procesar orders UPPER BOUND
+    upper_bound = read_database_upper_bound(   # <- hasta que momento voy a procesar orders??? que es la hora d postgress
         glue_context,
         connection_name=args["connection_name"],
         dbtable=dbtable,
@@ -115,8 +122,8 @@ def run_job(args: Dict[str, str]) -> None:
             "Stored watermark is later than PostgreSQL CURRENT_TIMESTAMP; "
             "check clocks and watermark configuration"
         )
-
-    ingestion_mode = "incremental" if watermark_state.exists else "initial"
+# 5 FASE decidir si es carga inicial o incremental
+    ingestion_mode = "incremental" if watermark_state.exists else "initial" #<- ya tengo un watermark? si es asi es incremental sino es inicial
     ingested_at = datetime.now(timezone.utc)
     log_event(
         "raw_ingestion_started",
@@ -126,7 +133,9 @@ def run_job(args: Dict[str, str]) -> None:
         watermark_from=format_utc_timestamp(watermark_state.value),
         watermark_to=format_utc_timestamp(upper_bound),
     )
-
+# 6 FASE crear el lector de PostgreSQL (reader)
+# cuando el core necesita datos pero NO SABE COMO FUNCIONA GLUE llama al reader para qye le pase ls datos
+# el reader es -> Yo sé cómo conectarme a PostgreSQL usando Glue y te voy a devolver los datos
     def source_reader(sample_query: str, source_table: str, entity_name: str) -> Any:
         return read_postgres_query(
             glue_context,
@@ -135,8 +144,8 @@ def run_job(args: Dict[str, str]) -> None:
             sample_query=sample_query,
             transformation_context=f"{entity_name}_incremental_source",
         )
-
-    result = run_raw_ingestion(
+# 7 FASE correr el core, le da todo lo que necesita y ahroa el lo corre
+    result = run_raw_ingestion(   #correr el core, le da todo lo que necesita y ahroa el lo corre 
         source_reader=source_reader,
         target_entity=entity_config.name,
         source_schema=args["source_schema"],
@@ -148,12 +157,13 @@ def run_job(args: Dict[str, str]) -> None:
         lower_bound=watermark_state.value,
         upper_bound=upper_bound,
     )
-
-    watermark_updated = watermark_store.advance(
+# 8 FASE actualizar el watermark y cerrar el job
+    watermark_updated = watermark_store.advance( 
         entity_config.name,
         watermark_state,
         upper_bound,
     )
+# 9 FASE loguear el cierre del job y hacer commit 
     log_event(
         "raw_ingestion_completed",
         entity=result.entity_name,
@@ -163,7 +173,7 @@ def run_job(args: Dict[str, str]) -> None:
         watermark_updated=watermark_updated,
         watermark_to=format_utc_timestamp(result.upper_bound),
     )
-    job.commit()
+    job.commit() #<- indica a Glue que el job terminó correctamente y que puede cerrar el job y liberar recursos
 
 
 def main() -> None:
