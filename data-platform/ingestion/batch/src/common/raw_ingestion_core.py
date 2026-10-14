@@ -1,4 +1,7 @@
-#
+#recibir los aprametros preparados por el adapter
+# extraer el itnervalo desde Postgress
+# transformar minimamente los datos 
+# almacenarlos en s3
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
@@ -44,21 +47,21 @@ def run_raw_ingestion(
     """Extract one bounded interval and append it to the Raw zone."""
     from pyspark import StorageLevel
 
-    entity_config = get_entity_config(target_entity)
-    run_id = validate_run_id(run_id)
+    entity_config = get_entity_config(target_entity)  #<- se obtiene la cofiguracion de la entidad dandole schema/tabla
+    run_id = validate_run_id(run_id)  #<- valida los parametros 
     source_system = validate_source_system(source_system)
     raw_base_path = validate_s3_uri(s3_target_path)
     source_table = qualified_table_name(source_schema, entity_config.source_table)
-    sample_query = build_incremental_query(
+    sample_query = build_incremental_query(   #<- construye la query para extraer los datos de la tabla de origen
         entity_config,
         source_schema,
-        lower_bound,
+        lower_bound,    #<- delimita el intervalo que debe extraerse
         upper_bound,
     )
 
-    source_df = source_reader(sample_query, source_table, entity_config.name)
+    source_df = source_reader(sample_query, source_table, entity_config.name)  #<- ejecuta la query y le da el resultado 
     normalized_df = normalize_source_dataframe(source_df, entity_config)
-    enriched_df = add_ingestion_metadata(
+    enriched_df = add_ingestion_metadata(   # <. agregarle metadata a loq ue se recogio de la query
         normalized_df,
         entity_config,
         source_schema=source_schema,
@@ -71,14 +74,14 @@ def run_raw_ingestion(
     )
 
     target_path = f"{raw_base_path}/{entity_config.name}/"
-    cached_df = enriched_df.persist(StorageLevel.MEMORY_AND_DISK)
+    cached_df = enriched_df.persist(StorageLevel.MEMORY_AND_DISK) 
     try:
         row_count = cached_df.count()
         if row_count > 0:
             (
-                cached_df.write.mode("append")
+                cached_df.write.mode("append")   # fromato en parquet, modo append cada ejecucion agrega datos al destino
                 .format("parquet")
-                .partitionBy("_ingestion_date", "_run_id")
+                .partitionBy("_ingestion_date", "_run_id") # en parque tse aprticiona por 
                 .save(target_path)
             )
     finally:
